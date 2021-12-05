@@ -1,0 +1,6 @@
+*.class
+*.dylib
+*.so
+*.o
+compile_commands.json
+/.cache
