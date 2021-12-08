@@ -4,3 +4,4 @@
 *.o
 compile_commands.json
 /.cache
+/.ccls-cache/
