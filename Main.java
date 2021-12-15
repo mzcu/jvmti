@@ -1,32 +1,61 @@
-import java.util.List;
-import java.util.LinkedList;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Stack;
+import java.util.concurrent.atomic.AtomicInteger;
 
 class Main {
+
+    private static Stack<A> stk = new Stack<>();
+    private static AtomicInteger c = new AtomicInteger();
+
+    // 16 + 14*8 = 128
     static class A {
-        private final double d1 = 1d;
-        private final double d2 = 100d;
+        private double d1;
+        private double d2;
+        private double d3;
+        private double d4;
+        private double d5;
+        private double d6;
+        private double d7;
+        private double d8;
+        private double d9;
+        private double d10;
+        private double d11;
+        private double d12;
+        private double d13;
+        private double d14;
     }
-    static class B extends A {}
-    private static List<A> other() {
-        var as = new LinkedList<A>();
-        for (int i = 0; i < 10_000; i++) {
-            as.add(new A());
+
+
+    private static A culprit() {
+        A a = new A();
+        if (Main.c.getAndIncrement() % 2 == 0) {
+            Main.stk.push(a);
         }
-        return as;
+        return a;
+    }
+
+    private static A warmup() {
+        var n = 8*1024*10;
+        for (int i = 0; i < n; i++) {
+            Main.stk.push(new A());
+        }
+        for (int i = 0; i < n - 1; i++) {
+            Main.stk.pop();
+        }
+        return Main.stk.pop();
     }
 
     public static void main(String[] args) throws Exception {
-        var ref = new AtomicReference<A>();
-        Thread t1 = new Thread(() -> {
-                List<A> as = Main.other();
-        });
-        Thread t2 = new Thread(() -> {
-                List<A> as = Main.other();
-                ref.set(as.get(0));
-        });
-        t1.start(); t2.start();
-        t1.join(); t2.join();
+        Thread.sleep(100);
+        A a = Main.warmup();
         System.gc();
+        Thread.sleep(100);
+        a.d13 = a.d11 + a.d12;
+        System.gc();
+        for (int i = 0; i < 8*1024*15; i++) {
+            a = Main.culprit();
+            if (Main.c.get() % 1_000_000 == 0) {
+                System.gc();
+            }
+        }
     }
 }

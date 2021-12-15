@@ -1,14 +1,15 @@
 JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
-CXXFLAGS=-std=c++11 -I$(JAVA)/include -I$(JAVA)/include/darwin
-LDFLAGS=-shared
+CXXFLAGS=-std=c++20 -I$(JAVA)/include -I$(JAVA)/include/darwin -I/opt/homebrew/include
+LDFLAGS=-shared -L/opt/homebrew/lib -lprotobuf
 TARGET=profi.dylib
+PROTOC=protoc
 
 
-$(TARGET): profi.o
+$(TARGET): profile.pb.o profi.o
 	$(CXX) $(LDFLAGS) -o $@ $^ -lc
 
 test:
-	$(JAVA)/bin/java -Xmx16m -agentpath:./profi.dylib Main
+	$(JAVA)/bin/java -Xmx16m -agentpath:./profi.dylib -Xint -XX:-Inline Main
 
 buildMain:
 	$(JAVA)/bin/javac Main.java
@@ -17,4 +18,7 @@ clean:
 	$(RM) profi.dylib
 	$(RM) profi.o
 
-.PHONY: clean test buildMain
+protoc:
+	$(PROTOC) --cpp_out=. profile.proto
+
+.PHONY: clean test buildMain protoc
