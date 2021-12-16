@@ -1,56 +1,87 @@
-#include "google/protobuf/stubs/common.h"
-#include "profile.pb.h"
-#include <algorithm>
-#include <cstdio>
-#include <cstring>
-#include <fstream>
-#include <functional>
-#include <ios>
-#include <iostream>
-#include <iterator>
+// {{{ Includes
 #include <jvmti.h>
+
+#include <fstream>
 #include <map>
-#include <ostream>
 #include <sstream>
 #include <string>
 #include <vector>
 
-using std::mutex;
+#include "google/protobuf/stubs/common.h"
+#include "profile.pb.h"
+//  }}}
 
+// {{{ Forward declarations
 extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
                                                      jthread thread,
                                                      jobject object,
                                                      jclass klass, jlong size);
-struct allocationInfo {
+// }}}
+
+// {{{ Data
+struct AllocationInfo {
   jlong sizeBytes;
   jweak ref;
 };
 
-struct methodInfo {
+struct MethodInfo {
   std::string name;
   std::string klass;
   std::string file;
   int line;
 };
 
-std::ostream &operator<<(std::ostream &os, const methodInfo &m) {
+std::ostream &operator<<(std::ostream &os, const MethodInfo &m) {
   return (os << m.klass << m.name << "(" << m.file << ":" << m.line << ")");
 }
 
-// static std::multimap<std::string, allocationInfo> storage = {};
-static std::multimap<long, allocationInfo> storage = {};
-static std::map<long, std::vector<jmethodID>> stacks = {};
-static std::map<jmethodID, methodInfo> methods = {};
-static std::mutex write;
+class StackTrace {
+public:
+  // TODO: expose necessary iterator instead of vector
+  std::vector<jmethodID> GetFrames() const { return frames; }
+  void AddFrame(jmethodID methodId) { frames.push_back(methodId); };
 
-std::ostream &operator<<(std::ostream &os, const std::vector<jmethodID> &v) {
+private:
+  std::vector<jmethodID> frames;
+};
+
+std::ostream &operator<<(std::ostream &os, const StackTrace &st) {
   std::stringstream sstream;
-  for (auto id : v) {
-    sstream << methods[id] << " ";
+  for (auto id : st.GetFrames()) {
+    sstream << std::hex << id << " ";
   }
   return (os << sstream.str());
 }
 
+class Storage {
+public:
+  // TODO: hide fields and expose necessary iterators
+  std::multimap<long, AllocationInfo> allocations;
+  std::map<jmethodID, MethodInfo> methods;
+  void AddMethod(jmethodID id, MethodInfo methodInfo) {
+    methods.insert({id, methodInfo});
+  }
+  void AddAllocation(long id, StackTrace stackTrace,
+                     AllocationInfo allocationInfo) {
+    if (!stacks.contains(id)) {
+      stacks.insert({id, stackTrace});
+    }
+    allocations.insert({id, allocationInfo});
+  }
+  bool HasMethod(jmethodID id) const { return methods.contains(id); }
+  MethodInfo GetMethod(jmethodID id) { return methods[id]; }
+  StackTrace GetStackTrace(long id) { return stacks[id]; }
+
+private:
+  std::map<long, StackTrace> stacks;
+};
+
+// }}}
+
+static std::mutex write;
+static Storage storage;
+
+// {{{ OnLoad Callback
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
                                     void *reserved) {
 
@@ -92,24 +123,14 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 
   return JNI_OK;
 }
+// }}}
 
 bool isDeallocated(JNIEnv *jni, jweak ref) {
   return jni->IsSameObject(ref, NULL);
 }
 
-void exportHeapProfile() {
-
-  // header
-  std::string profile = "--- heapz 1 --\nformat = java\nresolution=bytes\n";
-
-  // TODO count size @ 0x00000003 [... 0xStackBottom ] \n
-
-  // TODO  0x00000003 com.example.function003 (Source003.java:103)
-
-  std::cout << profile << std::endl;
-}
-
-void exportHeapProfileProtobuf(JNIEnv *jni) {
+void exportHeapProfileProtobuf(
+    std::function<bool(const jweak &)> allocChecker) {
 
   perftools::profiles::Profile profile;
   profile.add_string_table("");
@@ -141,27 +162,27 @@ void exportHeapProfileProtobuf(JNIEnv *jni) {
   }
 
   int lidx = 1;
-  auto currentStackId = storage.begin()->first;
+  auto currentStackId = storage.allocations.begin()->first;
   auto sentinel = currentStackId + 1; // fake last element
-  storage.insert({sentinel, allocationInfo{}});
+  storage.allocations.insert({sentinel, AllocationInfo{}});
   jlong currentAllocSize = 0;
   jlong currentAllocCount = 0;
   jlong currentUsedSize = 0;
   jlong currentUsedCount = 0;
-  for (auto allocation : storage) {
+  for (auto allocation : storage.allocations) {
     auto stackId = allocation.first;
     auto allocationInfo = allocation.second;
     // Requires sentinel as the last element
     if (stackId != currentStackId && currentAllocCount > 0) {
-      auto stack = stacks[currentStackId];
+      auto stack = storage.GetStackTrace(currentStackId);
       auto sample = profile.add_sample();
       sample->add_value(currentAllocCount);
       sample->add_value(currentAllocSize);
       sample->add_value(currentUsedCount);
       sample->add_value(currentUsedSize);
-      for (auto methodId : stack) {
+      for (auto methodId : stack.GetFrames()) {
         auto address = reinterpret_cast<long>(methodId);
-        auto method = methods[methodId];
+        auto method = storage.GetMethod(methodId);
         auto location = profile.add_location();
         location->set_id(lidx);
         location->set_address(address);
@@ -172,21 +193,21 @@ void exportHeapProfileProtobuf(JNIEnv *jni) {
         lidx++;
       }
       currentStackId = stackId;
-      currentUsedSize = currentUsedCount
-        = currentAllocSize = currentAllocCount = 0;
+      currentUsedSize = currentUsedCount = currentAllocSize =
+          currentAllocCount = 0;
     }
 
     currentAllocCount++;
     currentAllocSize += allocationInfo.sizeBytes;
 
-    if (!isDeallocated(jni, allocationInfo.ref)) {
+    if (allocChecker(allocationInfo.ref)) {
       currentUsedCount++;
       currentUsedSize += allocationInfo.sizeBytes;
     }
   }
 
   int sti = 7;
-  for (auto method : methods) {
+  for (auto method : storage.methods) {
     auto function = profile.add_function();
     function->set_id(reinterpret_cast<long>(method.first));
     profile.add_string_table(method.second.file);
@@ -206,39 +227,11 @@ void exportHeapProfileProtobuf(JNIEnv *jni) {
   google::protobuf::ShutdownProtobufLibrary();
 }
 
-void exportHeapProfilePlain(JNIEnv *jni) {
-
-  std::cout << "\nPrinting heap sample:\n\n";
-
-  auto currentStackId = storage.begin()->first;
-  jlong currentSize = 0;
-  jlong currentReclaimed = 0;
-  for (const auto &pair : storage) {
-    if (pair.first != currentStackId) {
-      if (currentSize + currentReclaimed > 30) {
-        auto methodId = stacks[currentStackId].front();
-        auto methodInfo = methods[methodId];
-        std::cout << methodInfo << " retained=" << currentSize
-                  << " reclaimed=" << currentReclaimed << "\n";
-      }
-      currentStackId = pair.first;
-      currentSize = currentReclaimed = 0;
-    }
-
-    if (isDeallocated(jni, pair.second.ref)) {
-      currentReclaimed += pair.second.sizeBytes;
-    } else {
-      currentSize += pair.second.sizeBytes;
-    }
-  }
-  // TODO: last entry missing
-}
-
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
   JNIEnv *jni = NULL;
   vm->GetEnv((void **)&jni, JNI_VERSION_10);
-  // exportHeapProfilePlain(jni);
-  exportHeapProfileProtobuf(jni);
+  auto allocChecker = [jni](jweak ref) { return isDeallocated(jni, ref); };
+  exportHeapProfileProtobuf(allocChecker);
 }
 
 void check(jvmtiError err, const char *msg) {
@@ -248,10 +241,13 @@ void check(jvmtiError err, const char *msg) {
   }
 }
 
+
+// {{{ SampledObjectAlloc callback
 extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
                                                      jthread thread,
                                                      jobject object,
                                                      jclass klass, jlong size) {
+
   jvmtiFrameInfo frames[32];
   jint frame_count;
   jvmtiError err;
@@ -266,9 +262,8 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     std::string allocatedKlassName(allocatedInstanceClassSignature);
     env->Deallocate((unsigned char *)allocatedInstanceClassSignature);
 
-
     jmethodID top = frames[0].method;
-    std::vector<jmethodID> stack;
+    StackTrace stack;
     long hash = 0;
 
     for (auto i = 0; i < frame_count; i++) {
@@ -280,11 +275,11 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
       hash += hash << 10;
       hash ^= hash >> 6;
 
-      stack.push_back(method);
+      stack.AddFrame(method);
 
       {
         const std::lock_guard<std::mutex> lock(write);
-        if (methods.contains(method))
+        if (storage.HasMethod(method))
           continue;
       }
 
@@ -324,14 +319,14 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
       std::string name(methodName);
       std::string klassName(methodDeclaringClassSignature);
       std::string sourceName(sourceFileName);
-      methodInfo *info = new methodInfo{.name = name,
+      MethodInfo *info = new MethodInfo{.name = name,
                                         .klass = klassName,
                                         .file = sourceName,
                                         .line = lineNumber};
       {
         // TODO: use different lock
         const std::lock_guard<std::mutex> lock(write);
-        methods.insert({method, *info});
+        storage.AddMethod(method, *info);
       }
 
       env->Deallocate((unsigned char *)methodName);
@@ -345,15 +340,14 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     hash ^= hash >> 11;
 
     jweak ref = jni->NewWeakGlobalRef(object);
-    allocationInfo *info = new allocationInfo{.sizeBytes = size, .ref = ref};
+    AllocationInfo *info = new AllocationInfo{.sizeBytes = size, .ref = ref};
 
     {
-      const std::lock_guard<mutex> lock(write);
-      // std::cout << "alloc " << allocatedKlassName << " in " << methods[top] << std::endl;
-      storage.insert({hash, *info});
-      if (!stacks.contains(hash)) {
-        stacks.insert({hash, stack});
-      }
+      const std::lock_guard<std::mutex> lock(write);
+      // std::cout << "alloc " << allocatedKlassName << " in " << methods[top]
+      // << std::endl;
+      storage.AddAllocation(hash, stack, *info);
     }
   }
 }
+// }}}
