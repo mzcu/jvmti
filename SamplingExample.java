@@ -1,5 +1,6 @@
 import java.util.Stack;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.file.*;
 
 class SamplingExample {
 
@@ -61,7 +62,8 @@ class SamplingExample {
             }
         }
         heapz.getDeclaredMethod("stopSampling").invoke(null);
-        byte[] r = (byte[]) heapz.getDeclaredMethod("getResults").invoke(null);
-        System.out.println(r.length);
+        byte[] profile = (byte[]) heapz.getDeclaredMethod("getResults").invoke(null);
+        Path path = Paths.get("sample.prof");
+        Files.write(path, profile);
     }
 }

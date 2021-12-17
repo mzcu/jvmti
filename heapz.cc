@@ -1,11 +1,14 @@
 // {{{ Includes
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <jvmti.h>
 
 #include <fstream>
 #include <map>
+#include <memory>
+#include <ostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,77 +17,22 @@
 #include "profile.pb.h"
 
 #include "heapz-inl.h"
+#include "storage.h"
 //  }}}
 
 // {{{ Forward declarations
 extern "C" {
-  JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv*, JNIEnv*, jthread, jobject, jclass, jlong);
-  JNIEXPORT void JNICALL VMStart(jvmtiEnv*, JNIEnv*);
+JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *, JNIEnv *, jthread,
+                                          jobject, jclass, jlong);
+JNIEXPORT void JNICALL VMStart(jvmtiEnv *, JNIEnv *);
 }
-// }}}
-
-// {{{ Data
-struct AllocationInfo {
-  jlong sizeBytes;
-  jweak ref;
-};
-
-struct MethodInfo {
-  std::string name;
-  std::string klass;
-  std::string file;
-  int line;
-};
-
-std::ostream &operator<<(std::ostream &os, const MethodInfo &m) {
-  return (os << m.klass << m.name << "(" << m.file << ":" << m.line << ")");
-}
-
-class StackTrace {
-public:
-  // TODO: expose necessary iterator instead of vector
-  std::vector<jmethodID> GetFrames() const { return frames; }
-  void AddFrame(jmethodID methodId) { frames.push_back(methodId); };
-
-private:
-  std::vector<jmethodID> frames;
-};
-
-std::ostream &operator<<(std::ostream &os, const StackTrace &st) {
-  std::stringstream sstream;
-  for (auto id : st.GetFrames()) {
-    sstream << std::hex << id << " ";
-  }
-  return (os << sstream.str());
-}
-
-class Storage {
-public:
-  // TODO: hide fields and expose necessary iterators
-  std::multimap<long, AllocationInfo> allocations;
-  std::map<jmethodID, MethodInfo> methods;
-  void AddMethod(jmethodID id, MethodInfo methodInfo) {
-    methods.insert({id, methodInfo});
-  }
-  void AddAllocation(long id, StackTrace stackTrace,
-                     AllocationInfo allocationInfo) {
-    if (!stacks.contains(id)) {
-      stacks.insert({id, stackTrace});
-    }
-    allocations.insert({id, allocationInfo});
-  }
-  bool HasMethod(jmethodID id) const { return methods.contains(id); }
-  MethodInfo GetMethod(jmethodID id) { return methods[id]; }
-  StackTrace GetStackTrace(long id) { return stacks[id]; }
-
-private:
-  std::map<long, StackTrace> stacks;
-};
-
 // }}}
 
 static std::mutex write;
 static Storage storage;
+static volatile bool isProfiling = false;
+static std::function<bool(long)> setSamplingInterval;
+static std::function<bool(intptr_t)> isObjectAllocated;
 
 // {{{ OnLoad Callback
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
@@ -118,9 +66,8 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
     return JNI_ERR;
   }
 
-  if (JVMTI_ERROR_NONE !=
-      jvmti->SetEventNotificationMode(JVMTI_ENABLE,
-                                      JVMTI_EVENT_VM_START, NULL)) {
+  if (JVMTI_ERROR_NONE != jvmti->SetEventNotificationMode(
+                              JVMTI_ENABLE, JVMTI_EVENT_VM_START, NULL)) {
     return JNI_ERR;
   }
 
@@ -129,20 +76,32 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
     return JNI_ERR;
   }
 
-  if (JVMTI_ERROR_NONE != jvmti->SetHeapSamplingInterval(0)) {
-    return JNI_ERR;
-  }
+  setSamplingInterval = [jvmti](long interval) {
+    auto result = jvmti->SetHeapSamplingInterval(interval);
+    if (JVMTI_ERROR_NONE != result) {
+      std::cout << "JVMTI error when setting heap sampling interval: " << result
+                << std::endl;
+      return false;
+    }
+    std::cout << "Heap sampling interval set to " << result << "k" << std::endl;
+    return true;
+  };
+
+  setSamplingInterval(0);
+  isProfiling = false;
 
   return JNI_OK;
 }
 // }}}
 
-bool isDeallocated(JNIEnv *jni, jweak ref) {
-  return jni->IsSameObject(ref, NULL);
-}
+std::vector<unsigned char>
+exportHeapProfileProtobuf() {
 
-void exportHeapProfileProtobuf(
-    std::function<bool(const jweak &)> allocChecker) {
+  const std::lock_guard<std::mutex> lock(write);
+
+  if (storage.allocations.empty()) {
+    return std::vector<unsigned char>(0);
+  }
 
   perftools::profiles::Profile profile;
   profile.add_string_table("");
@@ -193,13 +152,12 @@ void exportHeapProfileProtobuf(
       sample->add_value(currentUsedCount);
       sample->add_value(currentUsedSize);
       for (auto methodId : stack.GetFrames()) {
-        auto address = reinterpret_cast<long>(methodId);
         auto method = storage.GetMethod(methodId);
         auto location = profile.add_location();
         location->set_id(lidx);
-        location->set_address(address);
+        location->set_address(methodId);
         auto line = location->add_line();
-        line->set_function_id(address);
+        line->set_function_id(methodId);
         line->set_line(method.line);
         sample->add_location_id(lidx);
         lidx++;
@@ -212,7 +170,7 @@ void exportHeapProfileProtobuf(
     currentAllocCount++;
     currentAllocSize += allocationInfo.sizeBytes;
 
-    if (allocChecker(allocationInfo.ref)) {
+    if (isObjectAllocated(allocationInfo.ref)) {
       currentUsedCount++;
       currentUsedSize += allocationInfo.sizeBytes;
     }
@@ -221,7 +179,7 @@ void exportHeapProfileProtobuf(
   int sti = 7;
   for (auto method : storage.methods) {
     auto function = profile.add_function();
-    function->set_id(reinterpret_cast<long>(method.first));
+    function->set_id(method.first);
     profile.add_string_table(method.second.file);
     function->set_filename(sti++);
     profile.add_string_table(method.second.name);
@@ -230,20 +188,23 @@ void exportHeapProfileProtobuf(
     sti++;
   }
 
-  std::ofstream file;
-  file.open("tmp.prof");
-  profile.SerializeToOstream(&file);
-  file.close();
+  // std::ofstream file;
+  // file.open("tmp.prof");
+  // profile.SerializeToOstream(&file);
+  // file.close();
+
+  auto size = profile.ByteSizeLong();
+  auto buffer = std::vector<unsigned char>(size);
+  profile.SerializeToArray(buffer.data(), size);
 
   // std::cout << profile.DebugString() << std::endl;
   google::protobuf::ShutdownProtobufLibrary();
+
+  return buffer;
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
-  JNIEnv *jni = NULL;
-  vm->GetEnv((void **)&jni, JNI_VERSION_10);
-  auto allocChecker = [jni](jweak ref) { return isDeallocated(jni, ref); };
-  exportHeapProfileProtobuf(allocChecker);
+  exportHeapProfileProtobuf();
 }
 
 void check(jvmtiError err, const char *msg) {
@@ -253,20 +214,28 @@ void check(jvmtiError err, const char *msg) {
   }
 }
 
-JNIEXPORT void JNICALL VMStart(jvmtiEnv* jvmti, JNIEnv* env) {
-    jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class, Heapz_class_len);
-    if (klass == NULL) {
-      std::cerr << "Can't define Heapz.java class" << std::endl;
-      exit(2);
-    }
-}
+JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
 
+  isObjectAllocated = [env](uintptr_t ref) {
+    return env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
+  };
+
+  jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class,
+                                  Heapz_class_len);
+  if (klass == NULL) {
+    std::cerr << "Can't define Heapz.java class" << std::endl;
+    exit(2);
+  }
+}
 
 // {{{ SampledObjectAlloc callback
 extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
                                                      jthread thread,
                                                      jobject object,
                                                      jclass klass, jlong size) {
+
+  if (!isProfiling)
+    return;
 
   jvmtiFrameInfo frames[32];
   jint frame_count;
@@ -289,17 +258,18 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     for (auto i = 0; i < frame_count; i++) {
       jmethodID method = frames[i].method;
       jlocation location = frames[i].location;
+      uintptr_t methodPointer = reinterpret_cast<uintptr_t>(method);
 
       // from heapster / gperftools
       hash += reinterpret_cast<uintptr_t>(method);
       hash += hash << 10;
       hash ^= hash >> 6;
 
-      stack.AddFrame(method);
+      stack.AddFrame(methodPointer);
 
       {
         const std::lock_guard<std::mutex> lock(write);
-        if (storage.HasMethod(method))
+        if (storage.HasMethod(methodPointer))
           continue;
       }
 
@@ -346,7 +316,7 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
       {
         // TODO: use different lock
         const std::lock_guard<std::mutex> lock(write);
-        storage.AddMethod(method, *info);
+        storage.AddMethod(methodPointer, *info);
       }
 
       env->Deallocate((unsigned char *)methodName);
@@ -360,7 +330,8 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     hash ^= hash >> 11;
 
     jweak ref = jni->NewWeakGlobalRef(object);
-    AllocationInfo *info = new AllocationInfo{.sizeBytes = size, .ref = ref};
+    AllocationInfo *info = new AllocationInfo{
+        .sizeBytes = size, .ref = reinterpret_cast<uintptr_t>(ref)};
 
     {
       const std::lock_guard<std::mutex> lock(write);
@@ -381,32 +352,33 @@ extern "C" {
  * Method:    startSampling
  * Signature: ()V
  */
-  JNIEXPORT void JNICALL Java_Heapz_startSampling (JNIEnv *jni, jclass klass) {
-    std::cout << "Started sampling" << std::endl;
-  }
-
-  /*
-  * Class:     Heapz
-  * Method:    stopSampling
-  * Signature: ()V
-  */
-  JNIEXPORT void JNICALL Java_Heapz_stopSampling (JNIEnv *jni, jclass klass) {
-      std::cout << "Stopped sampling" << std::endl;
-  }
-
-  /*
-  * Class:     Heapz
-  * Method:    getResults
-  * Signature: ()[B
-  */
-  JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults (JNIEnv *jni, jclass klass) {
-          jbyte a[] = {1,2,3};
-          jbyteArray ret = jni->NewByteArray(3);
-          jni->SetByteArrayRegion(ret, 0, 3, a);
-          return ret;
-  }
-
+JNIEXPORT void JNICALL Java_Heapz_startSampling(JNIEnv *jni, jclass klass) {
+  isProfiling = true;
+  std::cout << "Started sampling" << std::endl;
 }
 
+/*
+ * Class:     Heapz
+ * Method:    stopSampling
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
+  isProfiling = false;
+  std::cout << "Stopped sampling" << std::endl;
+}
+
+/*
+ * Class:     Heapz
+ * Method:    getResults
+ * Signature: ()[B
+ */
+JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults(JNIEnv *jni, jclass klass) {
+  auto buffer = exportHeapProfileProtobuf();
+  jbyteArray result = jni->NewByteArray(buffer.size());
+  jni->SetByteArrayRegion(result, 0, buffer.size(), reinterpret_cast<jbyte*>(buffer.data()));
+  return result;
+}
+
+}
 
 // }}}
