@@ -5,19 +5,29 @@ TARGET=libheapz.dylib
 PROTOC=protoc
 
 
+all: Heapz.class $(TARGET)
+
 $(TARGET): profile.pb.o heapz.o
 	$(CXX) $(LDFLAGS) -o $@ $^ -lc
 
 test:
 	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) -Xint -XX:-Inline Main
 
+testJavaClass:
+	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) Heapz
+
+testSampling:
+	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) SamplingExample
+
 buildMain:
-	$(JAVA)/bin/javac Main.java
+	$(JAVA)/bin/javac Main.java SamplingExample.java
+
+Heapz.class: Heapz.java
+	$(JAVA)/bin/javac Heapz.java
+	xxd -i $@ > heapz-inl.h
 
 clean:
-	$(RM) *.o *.dylib
+	$(RM) *.o *.dylib Heapz.class
 
 protoc:
 	$(PROTOC) --cpp_out=. profile.proto
-
-.PHONY: clean test buildMain protoc

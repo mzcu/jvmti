@@ -1,4 +1,7 @@
 // {{{ Includes
+#include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <jvmti.h>
 
 #include <fstream>
@@ -9,13 +12,15 @@
 
 #include "google/protobuf/stubs/common.h"
 #include "profile.pb.h"
+
+#include "heapz-inl.h"
 //  }}}
 
 // {{{ Forward declarations
-extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
-                                                     jthread thread,
-                                                     jobject object,
-                                                     jclass klass, jlong size);
+extern "C" {
+  JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv*, JNIEnv*, jthread, jobject, jclass, jlong);
+  JNIEXPORT void JNICALL VMStart(jvmtiEnv*, JNIEnv*);
+}
 // }}}
 
 // {{{ Data
@@ -96,6 +101,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
   jvmtiEventCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.SampledObjectAlloc = &SampledObjectAlloc;
+  callbacks.VMStart = &VMStart;
 
   jvmtiCapabilities caps;
   memset(&caps, 0, sizeof(caps));
@@ -109,6 +115,12 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
   if (JVMTI_ERROR_NONE !=
       jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                       JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL)) {
+    return JNI_ERR;
+  }
+
+  if (JVMTI_ERROR_NONE !=
+      jvmti->SetEventNotificationMode(JVMTI_ENABLE,
+                                      JVMTI_EVENT_VM_START, NULL)) {
     return JNI_ERR;
   }
 
@@ -241,6 +253,14 @@ void check(jvmtiError err, const char *msg) {
   }
 }
 
+JNIEXPORT void JNICALL VMStart(jvmtiEnv* jvmti, JNIEnv* env) {
+    jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class, Heapz_class_len);
+    if (klass == NULL) {
+      std::cerr << "Can't define Heapz.java class" << std::endl;
+      exit(2);
+    }
+}
+
 
 // {{{ SampledObjectAlloc callback
 extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
@@ -350,4 +370,43 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     }
   }
 }
+// }}}
+
+// {{{ Heapz.java native methods
+
+extern "C" {
+
+/*
+ * Class:     Heapz
+ * Method:    startSampling
+ * Signature: ()V
+ */
+  JNIEXPORT void JNICALL Java_Heapz_startSampling (JNIEnv *jni, jclass klass) {
+    std::cout << "Started sampling" << std::endl;
+  }
+
+  /*
+  * Class:     Heapz
+  * Method:    stopSampling
+  * Signature: ()V
+  */
+  JNIEXPORT void JNICALL Java_Heapz_stopSampling (JNIEnv *jni, jclass klass) {
+      std::cout << "Stopped sampling" << std::endl;
+  }
+
+  /*
+  * Class:     Heapz
+  * Method:    getResults
+  * Signature: ()[B
+  */
+  JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults (JNIEnv *jni, jclass klass) {
+          jbyte a[] = {1,2,3};
+          jbyteArray ret = jni->NewByteArray(3);
+          jni->SetByteArrayRegion(ret, 0, 3, a);
+          return ret;
+  }
+
+}
+
+
 // }}}
