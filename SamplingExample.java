@@ -1,4 +1,5 @@
 import java.util.Stack;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.file.*;
 
@@ -46,24 +47,22 @@ class SamplingExample {
     }
 
     public static void main(String[] args) throws Exception {
-        var cl = ClassLoader.getSystemClassLoader();
-        var heapz = cl.loadClass("Heapz");
-        Thread.sleep(100);
+        // Start sampling for 10 seconds in the background
+        Future<byte[]> profileResult = Heapz.sampleFor(10);
+
         A a = SamplingExample.warmup();
-        System.gc();
-        Thread.sleep(100);
-        a.d13 = a.d11 + a.d12;
-        System.gc();
-        heapz.getDeclaredMethod("startSampling").invoke(null);
+
         for (int i = 0; i < 8*1024*15; i++) {
             a = SamplingExample.culprit();
             if (SamplingExample.c.get() % 1_000_000 == 0) {
                 System.gc();
             }
         }
-        heapz.getDeclaredMethod("stopSampling").invoke(null);
-        byte[] profile = (byte[]) heapz.getDeclaredMethod("getResults").invoke(null);
+
+        // Wait until sample is collected
+        byte[] profile = profileResult.get();
         Path path = Paths.get("sample.prof");
         Files.write(path, profile);
+        Heapz.shutdown();
     }
 }
