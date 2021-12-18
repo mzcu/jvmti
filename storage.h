@@ -9,6 +9,7 @@
 
 #include <fstream>
 #include <map>
+#include <unordered_map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -53,7 +54,7 @@ class Storage {
 public:
   // TODO: hide fields and expose necessary iterators
   std::multimap<long, AllocationInfo> allocations;
-  std::map<uintptr_t, MethodInfo> methods;
+  std::unordered_map<uintptr_t, MethodInfo> methods;
   void AddMethod(uintptr_t id, MethodInfo methodInfo) {
     methods.insert({id, methodInfo});
   }
@@ -69,7 +70,7 @@ public:
   StackTrace GetStackTrace(long id) { return stacks[id]; }
 
 private:
-  std::map<long, StackTrace> stacks;
+  std::unordered_map<long, StackTrace> stacks;
 };
 
 // }}}
