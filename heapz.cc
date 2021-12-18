@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -88,7 +89,6 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
   };
 
   setSamplingInterval(0);
-  isProfiling = false;
 
   return JNI_OK;
 }
@@ -376,6 +376,10 @@ JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults(JNIEnv *jni, jclass klass) {
   auto buffer = exportHeapProfileProtobuf();
   jbyteArray result = jni->NewByteArray(buffer.size());
   jni->SetByteArrayRegion(result, 0, buffer.size(), reinterpret_cast<jbyte*>(buffer.data()));
+  {
+    const std::lock_guard<std::mutex> lock(write);
+    storage.Clear();
+  }
   return result;
 }
 

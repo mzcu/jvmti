@@ -9,9 +9,9 @@
 
 #include <fstream>
 #include <map>
-#include <unordered_map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 //  }}}
 
@@ -68,6 +68,11 @@ public:
   bool HasMethod(uintptr_t id) const { return methods.contains(id); }
   MethodInfo GetMethod(uintptr_t id) { return methods[id]; }
   StackTrace GetStackTrace(long id) { return stacks[id]; }
+  void Clear() {
+    stacks.clear();
+    methods.clear();
+    allocations.clear();
+  }
 
 private:
   std::unordered_map<long, StackTrace> stacks;
