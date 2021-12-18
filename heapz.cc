@@ -204,7 +204,7 @@ exportHeapProfileProtobuf() {
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
-  exportHeapProfileProtobuf();
+  // Cleanup?
 }
 
 void check(jvmtiError err, const char *msg) {
