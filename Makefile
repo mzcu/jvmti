@@ -1,5 +1,5 @@
 JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
-CXXFLAGS=-std=c++20 -I$(JAVA)/include -I$(JAVA)/include/darwin -I/opt/homebrew/include
+CXXFLAGS=-std=c++20 -I$(JAVA)/include -I$(JAVA)/include/darwin -I/opt/homebrew/include -DDEBUG
 LDFLAGS=-shared -L/opt/homebrew/lib -lprotobuf
 TARGET=libheapz.dylib
 PROTOC=protoc

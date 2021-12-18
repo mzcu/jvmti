@@ -18,6 +18,7 @@
 #include "profile.pb.h"
 
 #include "heapz-inl.h"
+#include "log.h"
 #include "storage.h"
 //  }}}
 
@@ -43,7 +44,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 
   if ((jvm->GetEnv((void **)&jvmti, JVMTI_VERSION_11)) != JNI_OK ||
       jvmti == NULL) {
-    std::cerr << "Need JVMTI 11";
+    LOG_ERROR("Need JVMTI version >= 11")
     exit(1);
   }
 
@@ -84,7 +85,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
                 << std::endl;
       return false;
     }
-    std::cout << "Heap sampling interval set to " << result << "k" << std::endl;
+    LOG_INFO("Heap sampling interval set to " << result << "k" << std::endl)
     return true;
   };
 
@@ -94,8 +95,9 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 }
 // }}}
 
-std::vector<unsigned char>
-exportHeapProfileProtobuf() {
+std::vector<unsigned char> exportHeapProfileProtobuf() {
+
+  LOG_DEBUG("Starting heap sample export" << std::endl)
 
   const std::lock_guard<std::mutex> lock(write);
 
@@ -200,11 +202,12 @@ exportHeapProfileProtobuf() {
   // std::cout << profile.DebugString() << std::endl;
   google::protobuf::ShutdownProtobufLibrary();
 
+  LOG_DEBUG("Heap sample export completed" << std::endl)
   return buffer;
 }
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
-  // Cleanup?
+  LOG_INFO("Unloading heapz agent" << std::endl)
 }
 
 void check(jvmtiError err, const char *msg) {
@@ -223,7 +226,7 @@ JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
   jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class,
                                   Heapz_class_len);
   if (klass == NULL) {
-    std::cerr << "Can't define Heapz.java class" << std::endl;
+    LOG_ERROR("Can't define Heapz.java class" << std::endl)
     exit(2);
   }
 }
@@ -354,7 +357,7 @@ extern "C" {
  */
 JNIEXPORT void JNICALL Java_Heapz_startSampling(JNIEnv *jni, jclass klass) {
   isProfiling = true;
-  std::cout << "Started sampling" << std::endl;
+  LOG_INFO("Started sampling" << std::endl)
 }
 
 /*
@@ -364,7 +367,7 @@ JNIEXPORT void JNICALL Java_Heapz_startSampling(JNIEnv *jni, jclass klass) {
  */
 JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
   isProfiling = false;
-  std::cout << "Stopped sampling" << std::endl;
+  LOG_INFO("Stopped sampling" << std::endl)
 }
 
 /*
@@ -373,16 +376,20 @@ JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
  * Signature: ()[B
  */
 JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults(JNIEnv *jni, jclass klass) {
+  LOG_INFO("Getting sampling results" << std::endl)
   auto buffer = exportHeapProfileProtobuf();
-  jbyteArray result = jni->NewByteArray(buffer.size());
-  jni->SetByteArrayRegion(result, 0, buffer.size(), reinterpret_cast<jbyte*>(buffer.data()));
+  auto size = buffer.size();
+  jbyteArray result = jni->NewByteArray(size);
+  jni->SetByteArrayRegion(result, 0, size,
+                          reinterpret_cast<jbyte *>(buffer.data()));
   {
-    const std::lock_guard<std::mutex> lock(write);
+    std::lock_guard<std::mutex> lock(write);
     storage.Clear();
   }
+  LOG_INFO("Got results, size is " << size << " bytes"
+                                                          << std::endl)
   return result;
 }
-
 }
 
 // }}}
