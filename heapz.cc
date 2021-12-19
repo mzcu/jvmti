@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <jvmti.h>
 
@@ -34,8 +35,15 @@ static std::mutex write;
 static Storage storage;
 static volatile bool isProfiling = false;
 static std::function<bool(long)> setSamplingInterval;
-static std::function<bool(uintptr_t)> isObjectAllocated;
 static std::function<void(void)> forceGarbageCollection;
+
+static bool isObjectAllocated(JNIEnv* env, uintptr_t ref) {
+    return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
+}
+
+static void deleteWeakGlobalRef(JNIEnv* env, uintptr_t ref) {
+    return env->DeleteWeakGlobalRef(reinterpret_cast<jweak>(ref));
+}
 
 // {{{ OnLoad Callback
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
@@ -103,14 +111,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 }
 // }}}
 
-std::vector<unsigned char> exportHeapProfileProtobuf() {
+std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv* env) {
 
   LOG_DEBUG("Starting heap sample export" << std::endl)
 
   LOG_DEBUG("Forcing GC" << std::endl)
   forceGarbageCollection();
   LOG_DEBUG("Forcing GC completed" << std::endl)
-
 
   const std::lock_guard<std::mutex> lock(write);
 
@@ -155,9 +162,11 @@ std::vector<unsigned char> exportHeapProfileProtobuf() {
   jlong currentAllocCount = 0;
   jlong currentUsedSize = 0;
   jlong currentUsedCount = 0;
-  for (auto allocation : storage.allocations) {
-    auto stackId = allocation.first;
-    auto allocationInfo = allocation.second;
+  auto allocation = storage.allocations.begin();
+  while (allocation != storage.allocations.end()) {
+    auto stackId = allocation->first;
+    auto allocationInfo = allocation->second;
+    storage.allocations.erase(allocation++);
     // Requires sentinel as the last element
     if (stackId != currentStackId && currentAllocCount > 0) {
       auto stack = storage.GetStackTrace(currentStackId);
@@ -166,7 +175,7 @@ std::vector<unsigned char> exportHeapProfileProtobuf() {
       sample->add_value(currentAllocSize);
       sample->add_value(currentUsedCount);
       sample->add_value(currentUsedSize);
-      for (auto methodId : stack.GetFrames()) {
+      for (auto const& methodId : stack.GetFrames()) {
         auto method = storage.GetMethod(methodId);
         auto location = profile.add_location();
         location->set_id(lidx);
@@ -185,14 +194,17 @@ std::vector<unsigned char> exportHeapProfileProtobuf() {
     currentAllocCount++;
     currentAllocSize += allocationInfo.sizeBytes;
 
-    if (isObjectAllocated(allocationInfo.ref)) {
+    if (isObjectAllocated(env, allocationInfo.ref)) {
       currentUsedCount++;
       currentUsedSize += allocationInfo.sizeBytes;
     }
+
+    deleteWeakGlobalRef(env, allocationInfo.ref);
+
   }
 
   int sti = 7;
-  for (auto method : storage.methods) {
+  for (auto const& method : storage.methods) {
     auto function = profile.add_function();
     function->set_id(method.first);
     profile.add_string_table(method.second.file);
@@ -231,10 +243,6 @@ void check(jvmtiError err, const char *msg) {
 }
 
 JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
-
-  isObjectAllocated = [env](uintptr_t ref) {
-    return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
-  };
 
   jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class,
                                   Heapz_class_len);
@@ -390,17 +398,18 @@ JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
  */
 JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults(JNIEnv *jni, jclass klass) {
   LOG_INFO("Getting sampling results" << std::endl)
-  auto buffer = exportHeapProfileProtobuf();
+  auto buffer = exportHeapProfileProtobuf(jni);
   auto size = buffer.size();
   jbyteArray result = jni->NewByteArray(size);
   jni->SetByteArrayRegion(result, 0, size,
                           reinterpret_cast<jbyte *>(buffer.data()));
   {
     std::lock_guard<std::mutex> lock(write);
+    LOG_DEBUG("Clearing storage" << std::endl)
     storage.Clear();
+    LOG_DEBUG("Done clearing storage" << std::endl)
   }
-  LOG_INFO("Got results, size is " << size << " bytes"
-                                                          << std::endl)
+  LOG_INFO("Got results, size is " << size << " bytes" << std::endl)
   return result;
 }
 }
