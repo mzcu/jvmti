@@ -34,7 +34,8 @@ static std::mutex write;
 static Storage storage;
 static volatile bool isProfiling = false;
 static std::function<bool(long)> setSamplingInterval;
-static std::function<bool(intptr_t)> isObjectAllocated;
+static std::function<bool(uintptr_t)> isObjectAllocated;
+static std::function<void(void)> forceGarbageCollection;
 
 // {{{ OnLoad Callback
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
@@ -89,6 +90,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
     return true;
   };
 
+  forceGarbageCollection = [jvmti]() {
+    auto result = jvmti->ForceGarbageCollection();
+    if (result != JVMTI_ERROR_NONE) {
+      LOG_ERROR("Can't force GC, JVMTI error code " << result << std::endl)
+    }
+  };
+
   setSamplingInterval(0);
 
   return JNI_OK;
@@ -98,6 +106,11 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 std::vector<unsigned char> exportHeapProfileProtobuf() {
 
   LOG_DEBUG("Starting heap sample export" << std::endl)
+
+  LOG_DEBUG("Forcing GC" << std::endl)
+  forceGarbageCollection();
+  LOG_DEBUG("Forcing GC completed" << std::endl)
+
 
   const std::lock_guard<std::mutex> lock(write);
 
@@ -220,7 +233,7 @@ void check(jvmtiError err, const char *msg) {
 JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
 
   isObjectAllocated = [env](uintptr_t ref) {
-    return env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
+    return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
   };
 
   jclass klass = env->DefineClass("Heapz", NULL, (jbyte const *)Heapz_class,

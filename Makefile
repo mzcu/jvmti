@@ -11,16 +11,10 @@ $(TARGET): profile.pb.o heapz.o
 	$(CXX) $(LDFLAGS) -o $@ $^ -lc
 
 test:
-	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) -Xint -XX:-Inline Main
+	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) -Xint -XX:-Inline SamplingExample
 
-testJavaClass:
-	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) Heapz
-
-testSampling:
-	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) SamplingExample
-
-buildMain:
-	$(JAVA)/bin/javac Main.java SamplingExample.java
+buildJava:
+	$(JAVA)/bin/javac SamplingExample.java
 
 Heapz.class: Heapz.java
 	$(JAVA)/bin/javac Heapz.java

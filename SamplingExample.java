@@ -1,6 +1,8 @@
 import java.util.Stack;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.nio.file.*;
 
 class SamplingExample {
@@ -47,22 +49,29 @@ class SamplingExample {
     }
 
     public static void main(String[] args) throws Exception {
-        // Start sampling for 10 seconds in the background
-        Future<byte[]> profileResult = Heapz.sampleFor(10);
+        var a = new AtomicReference<A>();
+        var exec = Executors.newFixedThreadPool(2);
+        exec.submit(() -> {}).get();
 
-        A a = SamplingExample.warmup();
+        // Start sampling in the background
+        Future<byte[]> profileResult = Heapz.sampleFor(5);
 
-        for (int i = 0; i < 8*1024*15; i++) {
-            a = SamplingExample.culprit();
-            if (SamplingExample.c.get() % 1_000_000 == 0) {
-                System.gc();
+        a.set(SamplingExample.warmup());
+
+        Runnable task = () -> {
+            for (int i = 0; i < 8*1024*12; i++) {
+                a.set(SamplingExample.culprit());
             }
-        }
+        };
+
+        exec.execute(task);
+        // exec.execute(task);
 
         // Wait until sample is collected
         byte[] profile = profileResult.get();
         Path path = Paths.get("sample.prof");
         Files.write(path, profile);
+        exec.shutdown();
         Heapz.shutdown();
     }
 }
