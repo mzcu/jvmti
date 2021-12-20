@@ -1,8 +1,22 @@
-JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
-CXXFLAGS=-std=c++20 -I$(JAVA)/include -I$(JAVA)/include/darwin -I/opt/homebrew/include -DDEBUG
-LDFLAGS=-shared -L/opt/homebrew/lib -lprotobuf
-TARGET=libheapz.dylib
+OS=$(shell uname -s | tr '[A-Z]' '[a-z]')
+ARCH=$(shell uname -p)
+CXXFLAGS=-std=c++20 -DDEBUG
+LDFLAGS=-shared -lprotobuf
 PROTOC=protoc
+
+ifeq ($(OS), darwin)
+	JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
+	CXXFLAGS += -I$(JAVA)/include -I$(JAVA)/include/darwin
+	ifeq ($(ARCH), arm)
+		PREFIX = /opt/homebrew
+	else
+		PREFIX = /usr/local
+	endif
+	CXXFLAGS += -I$(PREFIX)/include
+	LDFLAGS += -L$(PREFIX)/lib
+	TARGET=libheapz.dylib
+endif
+
 
 
 all: Heapz.class $(TARGET)
