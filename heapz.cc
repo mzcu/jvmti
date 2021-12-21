@@ -38,12 +38,12 @@ static volatile bool isProfiling = false;
 static std::function<bool(long)> setSamplingInterval;
 static std::function<void(void)> forceGarbageCollection;
 
-static bool isObjectAllocated(JNIEnv* env, uintptr_t ref) {
-    return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
+static bool isObjectAllocated(JNIEnv *env, uintptr_t ref) {
+  return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
 }
 
-static void deleteWeakGlobalRef(JNIEnv* env, uintptr_t ref) {
-    return env->DeleteWeakGlobalRef(reinterpret_cast<jweak>(ref));
+static void deleteWeakGlobalRef(JNIEnv *env, uintptr_t ref) {
+  return env->DeleteWeakGlobalRef(reinterpret_cast<jweak>(ref));
 }
 
 // {{{ OnLoad Callback
@@ -189,7 +189,7 @@ std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv *env) {
       sample->add_value(currentAllocSize);
       sample->add_value(currentUsedCount);
       sample->add_value(currentUsedSize);
-      for (auto const& methodId : stack.GetFrames()) {
+      for (auto const &methodId : stack.GetFrames()) {
         auto method = storage.GetMethod(methodId);
         auto location = profile.add_location();
         location->set_id(lidx);
@@ -214,10 +214,9 @@ std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv *env) {
     }
 
     deleteWeakGlobalRef(env, allocationInfo.ref);
-
   }
 
-  for (auto const& method : storage.methods) {
+  for (auto const &method : storage.methods) {
     auto function = profile.add_function();
     function->set_id(method.first);
     function->set_filename(sm.Retain(method.second.file));

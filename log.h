@@ -13,7 +13,7 @@
 
 #ifdef DEBUG
 #define LOG_DEBUG(STREAM)                                                      \
-    ScopedLogger("DEBUG", __FILE__, __LINE__).stream() << STREAM;
+  ScopedLogger("DEBUG", __FILE__, __LINE__).stream() << STREAM;
 #else
 #define LOG_DEBUG(STREAM)
 #endif // DEBUG
