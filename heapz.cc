@@ -13,6 +13,7 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "google/protobuf/stubs/common.h"
@@ -111,7 +112,26 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 }
 // }}}
 
-std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv* env) {
+class StringManager {
+public:
+  StringManager(perftools::profiles::Profile &profile) : profile_(profile) {
+    Retain(""); // profile.proto requirement
+  }
+  int Retain(std::string string) {
+    if (seen_strings_.contains(string)) {
+      return seen_strings_[string];
+    } else {
+      profile_.add_string_table(string);
+      return seen_strings_[string] = seen_strings_.size();
+    }
+  }
+
+private:
+  perftools::profiles::Profile &profile_;
+  std::unordered_map<std::string, int> seen_strings_;
+};
+
+std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv *env) {
 
   LOG_DEBUG("Starting heap sample export" << std::endl)
 
@@ -126,32 +146,26 @@ std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv* env) {
   }
 
   perftools::profiles::Profile profile;
-  profile.add_string_table("");
+  StringManager sm(profile);
   {
     auto sampleType = profile.add_sample_type();
-    profile.add_string_table("alloc_objects");
-    sampleType->set_type(1);
-    profile.add_string_table("count");
-    sampleType->set_unit(2);
+    sampleType->set_type(sm.Retain("alloc_objects"));
+    sampleType->set_unit(sm.Retain("count"));
   }
   {
     auto sampleType = profile.add_sample_type();
-    profile.add_string_table("alloc_space");
-    sampleType->set_type(3);
-    profile.add_string_table("bytes");
-    sampleType->set_unit(4);
+    sampleType->set_type(sm.Retain("alloc_space"));
+    sampleType->set_unit(sm.Retain("bytes"));
   }
   {
     auto sampleType = profile.add_sample_type();
-    profile.add_string_table("inuse_objects");
-    sampleType->set_type(5);
-    sampleType->set_unit(2); // count
+    sampleType->set_type(sm.Retain("inuse_objects"));
+    sampleType->set_unit(sm.Retain("count"));
   }
   {
     auto sampleType = profile.add_sample_type();
-    profile.add_string_table("inuse_space");
-    sampleType->set_type(6);
-    sampleType->set_unit(4); // bytes
+    sampleType->set_type(sm.Retain("inuse_space"));
+    sampleType->set_unit(sm.Retain("bytes"));
   }
 
   int lidx = 1;
@@ -203,28 +217,19 @@ std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv* env) {
 
   }
 
-  int sti = 7;
   for (auto const& method : storage.methods) {
     auto function = profile.add_function();
     function->set_id(method.first);
-    profile.add_string_table(method.second.file);
-    function->set_filename(sti++);
-    profile.add_string_table(method.second.name);
-    function->set_name(sti);
-    function->set_system_name(sti);
-    sti++;
+    function->set_filename(sm.Retain(method.second.file));
+    function->set_name(sm.Retain(method.second.name));
+    function->set_system_name(sm.Retain(method.second.name));
   }
-
-  // std::ofstream file;
-  // file.open("tmp.prof");
-  // profile.SerializeToOstream(&file);
-  // file.close();
 
   auto size = profile.ByteSizeLong();
   auto buffer = std::vector<unsigned char>(size);
   profile.SerializeToArray(buffer.data(), size);
 
-  // std::cout << profile.DebugString() << std::endl;
+  // profile.PrintDebugString();
   google::protobuf::ShutdownProtobufLibrary();
 
   LOG_DEBUG("Heap sample export completed" << std::endl)
