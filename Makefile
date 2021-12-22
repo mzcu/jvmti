@@ -27,8 +27,11 @@ $(TARGET): profile.pb.o heapz.o
 test:
 	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) -Xint -XX:-Inline SamplingExample
 
+testOneShot:
+	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET)=oneshot -Xint -XX:-Inline OneShotExample
+
 buildJava:
-	$(JAVA)/bin/javac SamplingExample.java
+	$(JAVA)/bin/javac SamplingExample.java OneShotExample.java
 
 Heapz.class: Heapz.java
 	$(JAVA)/bin/javac Heapz.java

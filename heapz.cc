@@ -29,14 +29,20 @@ extern "C" {
 JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *, JNIEnv *, jthread,
                                           jobject, jclass, jlong);
 JNIEXPORT void JNICALL VMStart(jvmtiEnv *, JNIEnv *);
+JNIEXPORT void JNICALL VMDeath(jvmtiEnv *, JNIEnv *);
 }
 // }}}
+
+struct HeapzOptions {
+  bool one_shot = false;
+};
 
 static std::mutex write;
 static Storage storage;
 static volatile bool isProfiling = false;
 static std::function<bool(long)> setSamplingInterval;
 static std::function<void(void)> forceGarbageCollection;
+static HeapzOptions heapz_options;
 
 static bool isObjectAllocated(JNIEnv *env, uintptr_t ref) {
   return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
@@ -44,6 +50,13 @@ static bool isObjectAllocated(JNIEnv *env, uintptr_t ref) {
 
 static void deleteWeakGlobalRef(JNIEnv *env, uintptr_t ref) {
   return env->DeleteWeakGlobalRef(reinterpret_cast<jweak>(ref));
+}
+
+static HeapzOptions parseOptions(char *options) {
+  HeapzOptions heapz_options;
+  std::string str(options ? options : "");
+  heapz_options.one_shot = str.find("oneshot") != std::string::npos;
+  return heapz_options;
 }
 
 // {{{ OnLoad Callback
@@ -58,10 +71,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
     exit(1);
   }
 
+  heapz_options = parseOptions(options);
+
   jvmtiEventCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.SampledObjectAlloc = &SampledObjectAlloc;
   callbacks.VMStart = &VMStart;
+  callbacks.VMDeath = &VMDeath;
 
   jvmtiCapabilities caps;
   memset(&caps, 0, sizeof(caps));
@@ -80,6 +96,11 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 
   if (JVMTI_ERROR_NONE != jvmti->SetEventNotificationMode(
                               JVMTI_ENABLE, JVMTI_EVENT_VM_START, NULL)) {
+    return JNI_ERR;
+  }
+
+  if (JVMTI_ERROR_NONE != jvmti->SetEventNotificationMode(
+                              JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL)) {
     return JNI_ERR;
   }
 
@@ -105,6 +126,10 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
       LOG_ERROR("Can't force GC, JVMTI error code " << result << std::endl)
     }
   };
+
+  if (heapz_options.one_shot) {
+    isProfiling = true;
+  }
 
   setSamplingInterval(0);
 
@@ -253,6 +278,16 @@ JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
   if (klass == NULL) {
     LOG_ERROR("Can't define Heapz.java class" << std::endl)
     exit(2);
+  }
+}
+
+JNIEXPORT void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *env) {
+  if (heapz_options.one_shot) {
+    LOG_INFO("OneShot profile export on VMDeath" << std::endl)
+    auto profile = exportHeapProfileProtobuf(env);
+    std::ofstream outfile("oneshot.prof", std::ios::out | std::ios::binary);
+    outfile.write(reinterpret_cast<const char *>(profile.data()),
+                  profile.size());
   }
 }
 
