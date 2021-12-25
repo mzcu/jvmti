@@ -17,11 +17,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "google/protobuf/stubs/common.h"
-#include "profile.pb.h"
-
 #include "heapz-inl.h"
 #include "log.h"
+#include "profile_exporter.h"
 #include "storage.h"
 //  }}}
 
@@ -41,19 +39,12 @@ struct HeapzOptions {
 static std::mutex write;
 static std::atomic_bool isProfiling = false;
 static Storage storage;
+static ProfileExporter exporter(storage);
 
 static std::function<bool(long)> setSamplingInterval;
 static std::function<void(void)> forceGarbageCollection;
 
 static HeapzOptions heapz_options;
-
-static bool isObjectAllocated(JNIEnv *env, uintptr_t ref) {
-  return !env->IsSameObject(reinterpret_cast<jweak>(ref), NULL);
-}
-
-static void deleteWeakGlobalRef(JNIEnv *env, uintptr_t ref) {
-  return env->DeleteWeakGlobalRef(reinterpret_cast<jweak>(ref));
-}
 
 static HeapzOptions parseOptions(char *options) {
   HeapzOptions heapz_options;
@@ -140,125 +131,18 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
 }
 // }}}
 
-class StringManager {
-public:
-  StringManager(perftools::profiles::Profile &profile) : profile_(profile) {
-    Retain(""); // profile.proto requirement
-  }
-  int Retain(std::string string) {
-    if (seen_strings_.contains(string)) {
-      return seen_strings_[string];
-    } else {
-      profile_.add_string_table(string);
-      return seen_strings_[string] = seen_strings_.size();
-    }
-  }
-
-private:
-  perftools::profiles::Profile &profile_;
-  std::unordered_map<std::string, int> seen_strings_;
-};
-
-std::vector<unsigned char> exportHeapProfileProtobuf(JNIEnv *env) {
-
+std::vector<unsigned char> exportHeapProfile(JNIEnv *env) {
   LOG_DEBUG("Starting heap sample export" << std::endl)
-
   LOG_DEBUG("Forcing GC" << std::endl)
   forceGarbageCollection();
   LOG_DEBUG("Forcing GC completed" << std::endl)
-
   const std::lock_guard<std::mutex> lock(write);
-
-  if (storage.allocations.empty()) {
-    return std::vector<unsigned char>(0);
-  }
-
-  perftools::profiles::Profile profile;
-  StringManager sm(profile);
-  {
-    auto sampleType = profile.add_sample_type();
-    sampleType->set_type(sm.Retain("alloc_objects"));
-    sampleType->set_unit(sm.Retain("count"));
-  }
-  {
-    auto sampleType = profile.add_sample_type();
-    sampleType->set_type(sm.Retain("alloc_space"));
-    sampleType->set_unit(sm.Retain("bytes"));
-  }
-  {
-    auto sampleType = profile.add_sample_type();
-    sampleType->set_type(sm.Retain("inuse_objects"));
-    sampleType->set_unit(sm.Retain("count"));
-  }
-  {
-    auto sampleType = profile.add_sample_type();
-    sampleType->set_type(sm.Retain("inuse_space"));
-    sampleType->set_unit(sm.Retain("bytes"));
-  }
-
-  int lidx = 1;
-  auto currentStackId = storage.allocations.begin()->first;
-  auto sentinel = currentStackId + 1; // fake last element
-  storage.allocations.insert({sentinel, AllocationInfo{}});
-  jlong currentAllocSize = 0;
-  jlong currentAllocCount = 0;
-  jlong currentUsedSize = 0;
-  jlong currentUsedCount = 0;
-  auto allocation = storage.allocations.begin();
-  while (allocation != storage.allocations.end()) {
-    auto stackId = allocation->first;
-    auto allocationInfo = allocation->second;
-    storage.allocations.erase(allocation++);
-    // Requires sentinel as the last element
-    if (stackId != currentStackId && currentAllocCount > 0) {
-      auto stack = storage.GetStackTrace(currentStackId);
-      auto sample = profile.add_sample();
-      sample->add_value(currentAllocCount);
-      sample->add_value(currentAllocSize);
-      sample->add_value(currentUsedCount);
-      sample->add_value(currentUsedSize);
-      for (auto const &methodId : stack.GetFrames()) {
-        auto method = storage.GetMethod(methodId);
-        auto location = profile.add_location();
-        location->set_id(lidx);
-        location->set_address(methodId);
-        auto line = location->add_line();
-        line->set_function_id(methodId);
-        line->set_line(method.line);
-        sample->add_location_id(lidx);
-        lidx++;
-      }
-      currentStackId = stackId;
-      currentUsedSize = currentUsedCount = currentAllocSize =
-          currentAllocCount = 0;
-    }
-
-    currentAllocCount++;
-    currentAllocSize += allocationInfo.sizeBytes;
-
-    if (isObjectAllocated(env, allocationInfo.ref)) {
-      currentUsedCount++;
-      currentUsedSize += allocationInfo.sizeBytes;
-    }
-
-    deleteWeakGlobalRef(env, allocationInfo.ref);
-  }
-
-  for (auto const &method : storage.methods) {
-    auto function = profile.add_function();
-    function->set_id(method.first);
-    function->set_filename(sm.Retain(method.second.file));
-    function->set_name(sm.Retain(method.second.name));
-    function->set_system_name(sm.Retain(method.second.name));
-  }
-
-  auto size = profile.ByteSizeLong();
-  auto buffer = std::vector<unsigned char>(size);
-  profile.SerializeToArray(buffer.data(), size);
-
-  // profile.PrintDebugString();
-  google::protobuf::ShutdownProtobufLibrary();
-
+  auto &&buffer = exporter.ExportHeapProfile([env](uintptr_t ref) {
+    auto jref = reinterpret_cast<jweak>(ref);
+    auto isInUse = !env->IsSameObject(jref, NULL);
+    env->DeleteWeakGlobalRef(jref);
+    return isInUse;
+  });
   LOG_DEBUG("Heap sample export completed" << std::endl)
   return buffer;
 }
@@ -287,7 +171,7 @@ JNIEXPORT void JNICALL VMStart(jvmtiEnv *jvmti, JNIEnv *env) {
 JNIEXPORT void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *env) {
   if (heapz_options.one_shot) {
     LOG_INFO("OneShot profile export on VMDeath" << std::endl)
-    auto profile = exportHeapProfileProtobuf(env);
+    auto profile = exportHeapProfile(env);
     std::ofstream outfile("oneshot.prof", std::ios::out | std::ios::binary);
     outfile.write(reinterpret_cast<const char *>(profile.data()),
                   profile.size());
@@ -440,7 +324,7 @@ JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
  */
 JNIEXPORT jbyteArray JNICALL Java_Heapz_getResults(JNIEnv *jni, jclass klass) {
   LOG_INFO("Getting sampling results" << std::endl)
-  auto buffer = exportHeapProfileProtobuf(jni);
+  auto buffer = exportHeapProfile(jni);
   auto size = buffer.size();
   jbyteArray result = jni->NewByteArray(size);
   jni->SetByteArrayRegion(result, 0, size,

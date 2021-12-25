@@ -1,8 +1,16 @@
 OS=$(shell uname -s | tr '[A-Z]' '[a-z]')
 ARCH=$(shell uname -p)
 CXXFLAGS=-std=c++20 -DDEBUG
-LDFLAGS=-shared -lprotobuf
+LDFLAGS=-shared
 PROTOC=protoc
+PROTOBUF=true
+
+ifdef PROTOBUF
+	LDFLAGS += -lprotobuf
+	PROFILE_EXPORT_OBJS = profile.pb.o profile_exporter_pprof.o
+else
+$(error Only protobuf export is currently supported, flag PROTOBUF must be set)
+endif
 
 ifeq ($(OS), darwin)
 	JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
@@ -21,7 +29,7 @@ endif
 
 all: Heapz.class $(TARGET)
 
-$(TARGET): profile.pb.o heapz.o
+$(TARGET): $(PROFILE_EXPORT_OBJS) heapz.o
 	$(CXX) $(LDFLAGS) -o $@ $^ -lc
 
 test:
