@@ -4,6 +4,7 @@
 *.o
 *.prof
 *.log
+*.DS_Store
 heapz-inl.h
 compile_commands.json
 /.cache

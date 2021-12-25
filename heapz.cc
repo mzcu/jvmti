@@ -1,6 +1,7 @@
 // {{{ Includes
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -38,10 +39,12 @@ struct HeapzOptions {
 };
 
 static std::mutex write;
+static std::atomic_bool isProfiling = false;
 static Storage storage;
-static volatile bool isProfiling = false;
+
 static std::function<bool(long)> setSamplingInterval;
 static std::function<void(void)> forceGarbageCollection;
+
 static HeapzOptions heapz_options;
 
 static bool isObjectAllocated(JNIEnv *env, uintptr_t ref) {
@@ -128,7 +131,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
   };
 
   if (heapz_options.one_shot) {
-    isProfiling = true;
+    isProfiling.store(true, std::memory_order_relaxed);
   }
 
   setSamplingInterval(0);
@@ -297,7 +300,7 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
                                                      jobject object,
                                                      jclass klass, jlong size) {
 
-  if (!isProfiling)
+  if (!isProfiling.load(std::memory_order_relaxed))
     return;
 
   jvmtiFrameInfo frames[32];
@@ -416,7 +419,7 @@ extern "C" {
  * Signature: ()V
  */
 JNIEXPORT void JNICALL Java_Heapz_startSampling(JNIEnv *jni, jclass klass) {
-  isProfiling = true;
+  isProfiling.store(true, std::memory_order_relaxed);
   LOG_INFO("Started sampling" << std::endl)
 }
 
@@ -426,7 +429,7 @@ JNIEXPORT void JNICALL Java_Heapz_startSampling(JNIEnv *jni, jclass klass) {
  * Signature: ()V
  */
 JNIEXPORT void JNICALL Java_Heapz_stopSampling(JNIEnv *jni, jclass klass) {
-  isProfiling = false;
+  isProfiling.store(false, std::memory_order_relaxed);
   LOG_INFO("Stopped sampling" << std::endl)
 }
 
