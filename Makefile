@@ -3,13 +3,13 @@ ARCH=$(shell uname -p)
 CXXFLAGS=-std=c++20 -DDEBUG
 LDFLAGS=-shared
 PROTOC=protoc
-PROTOBUF=true
+PROTOBUF=
 
 ifdef PROTOBUF
 	LDFLAGS += -lprotobuf
 	PROFILE_EXPORT_OBJS = profile.pb.o profile_exporter_pprof.o
 else
-$(error Only protobuf export is currently supported, flag PROTOBUF must be set)
+	PROFILE_EXPORT_OBJS = profile_exporter_flamegraph.o
 endif
 
 ifeq ($(OS), darwin)

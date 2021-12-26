@@ -4,6 +4,8 @@
 *.o
 *.prof
 *.log
+*.svg
+*.pdf
 *.DS_Store
 heapz-inl.h
 compile_commands.json
