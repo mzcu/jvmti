@@ -251,28 +251,26 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
       check(err, "class sig");
       char *sourceFileName;
       err = env->GetSourceFileName(methodDeclaringClass, &sourceFileName);
-      if (err != JVMTI_ERROR_NONE) {
-        sourceFileName = new char[8];
-        strcpy(sourceFileName, "Unknown");
+      std::string sourceName = "Unknown";
+      if (err == JVMTI_ERROR_NONE) {
+        sourceName = sourceFileName;
+        env->Deallocate((unsigned char *)sourceFileName);
       }
-      // check(err, "source name");
       std::string name(methodName);
       std::string klassName(methodDeclaringClassSignature);
-      std::string sourceName(sourceFileName);
-      MethodInfo *info = new MethodInfo{.name = name,
-                                        .klass = klassName,
-                                        .file = sourceName,
-                                        .line = lineNumber};
+      MethodInfo info{.name = name,
+                      .klass = klassName,
+                      .file = sourceName,
+                      .line = lineNumber};
       {
         // TODO: use different lock
         const std::lock_guard<std::mutex> lock(write);
-        storage.AddMethod(methodPointer, *info);
+        storage.AddMethod(methodPointer, info);
       }
 
       env->Deallocate((unsigned char *)methodName);
       env->Deallocate((unsigned char *)methodSignature);
       env->Deallocate((unsigned char *)methodDeclaringClassSignature);
-      env->Deallocate((unsigned char *)sourceFileName);
       jni->DeleteLocalRef(methodDeclaringClass);
     } // end loop
 
@@ -280,14 +278,14 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     hash ^= hash >> 11;
 
     jweak ref = jni->NewWeakGlobalRef(object);
-    AllocationInfo *info = new AllocationInfo{
-        .sizeBytes = size, .ref = reinterpret_cast<uintptr_t>(ref)};
+    AllocationInfo info{.sizeBytes = size,
+                        .ref = reinterpret_cast<uintptr_t>(ref)};
 
     {
       const std::lock_guard<std::mutex> lock(write);
       // std::cout << "alloc " << allocatedKlassName << " in " << methods[top]
       // << std::endl;
-      storage.AddAllocation(hash, stack, *info);
+      storage.AddAllocation(hash, stack, info);
     }
   }
 }
