@@ -4,6 +4,7 @@
 #include "storage.h"
 #include <functional>
 #include <vector>
+#include <memory>
 
 class Profile {
 public:

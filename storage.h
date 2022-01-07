@@ -60,12 +60,12 @@ public:
   }
   void AddAllocation(long id, StackTrace stackTrace,
                      AllocationInfo allocationInfo) {
-    if (!stacks.contains(id)) {
+    if (stacks.count(id) == 0) {
       stacks.insert({id, stackTrace});
     }
     allocations.insert({id, allocationInfo});
   }
-  bool HasMethod(uintptr_t id) const { return methods.contains(id); }
+  bool HasMethod(uintptr_t id) const { return methods.count(id) != 0; }
   MethodInfo GetMethod(uintptr_t id) { return methods[id]; }
   StackTrace GetStackTrace(long id) { return stacks[id]; }
   void Clear() {

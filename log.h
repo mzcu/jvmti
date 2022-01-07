@@ -33,7 +33,7 @@ struct ScopedLogger {
   std::stringstream &stream() { return ss_; }
   ~ScopedLogger() {
     auto now = std::chrono::system_clock::now();
-    auto us = duration_cast<std::chrono::microseconds>(now.time_since_epoch())
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch())
                   .count() %
               1000000;
     auto time = std::chrono::system_clock::to_time_t(now);
