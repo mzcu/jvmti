@@ -4,6 +4,7 @@ CXXFLAGS=-std=c++17
 LDFLAGS=-shared
 RM=rm -rf
 PROTOC=protoc
+JAVA=$(JAVA_HOME)
 PROTOBUF=
 
 ifdef PROTOBUF
@@ -14,7 +15,6 @@ else
 endif
 
 ifeq ($(OS), darwin)
-	JAVA=/Library/Java/JavaVirtualMachines/openjdk.jdk/Contents/Home
 	CXXFLAGS += -I$(JAVA)/include -I$(JAVA)/include/darwin -DDEBUG
 	ifeq ($(ARCH), arm)
 		PREFIX = /opt/homebrew
@@ -27,7 +27,6 @@ ifeq ($(OS), darwin)
 endif
 
 ifeq ($(OS), linux)
-	JAVA=$(JAVA_HOME)
 	CXXFLAGS += -fPIC -I$(JAVA)/include -I$(JAVA)/include/linux
 	PREFIX = /usr/local
 	CXXFLAGS += -I$(PREFIX)/include

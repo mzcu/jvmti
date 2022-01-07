@@ -1,16 +1,9 @@
-FROM ubuntu:rolling
+FROM centos:8
 
-ARG DEBIAN_FRONTEND=noninteractive
+RUN yum install -y dnf-plugins-core && yum config-manager --set-enabled powertools && yum update -y
+RUN yum -y groupinstall 'Development Tools' && \
+yum install -y vim-common java-11-openjdk-devel libstdc++-static
 
-RUN apt update && \
-apt install -y \
-build-essential \
-xxd \
-openjdk-17-jdk-headless
-
-RUN apt install -y \
-google-perftools \
-vim
 
 RUN mkdir -p /opt/heapz && cd /opt/heapz
 ADD *.cc /opt/heapz
@@ -19,9 +12,9 @@ ADD Makefile /opt/heapz
 ADD *.java /opt/heapz
 
 RUN cd /opt/heapz \
-&& echo "export JAVA_HOME=$(readlink -nf /usr/bin/java | xargs dirname | xargs dirname)" >> build.sh \
+&& echo "export JAVA_HOME=$(readlink -nf /usr/bin/javac | xargs dirname | xargs dirname)" >> build.sh \
 && echo "cd /opt/heapz" >> build.sh \
 && echo "make clean all" >> build.sh \
-&& echo "mv libheapz.so drop" >> build.sh
+&& echo "cp libheapz.so drop" >> build.sh
 
 ENTRYPOINT exec bash /opt/heapz/build.sh
