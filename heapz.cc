@@ -239,13 +239,6 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
   err = env->GetStackTrace(NULL, 0, max_frames, frames, &frame_count);
   if (err == JVMTI_ERROR_NONE && frame_count >= 1) {
 
-    char *allocatedInstanceClassSignature;
-    err = env->GetClassSignature(klass, &allocatedInstanceClassSignature,
-                                 nullptr);
-    check(err, "alloc class sig");
-    std::string allocatedKlassName(allocatedInstanceClassSignature);
-    env->Deallocate((unsigned char *)allocatedInstanceClassSignature);
-
     jmethodID top = frames[0].method;
     StackTrace stack;
     long hash = 0;
@@ -253,18 +246,18 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     for (auto i = 0; i < frame_count; i++) {
       jmethodID method = frames[i].method;
       jlocation location = frames[i].location;
-      uintptr_t methodPointer = reinterpret_cast<uintptr_t>(method);
+      uintptr_t methodId = reinterpret_cast<uintptr_t>(method);
 
       // from heapster / gperftools
       hash += reinterpret_cast<uintptr_t>(method);
       hash += hash << 10;
       hash ^= hash >> 6;
 
-      stack.AddFrame(methodPointer);
+      stack.AddFrame(methodId);
 
       {
         const std::lock_guard<std::mutex> lock(write);
-        if (storage.HasMethod(methodPointer))
+        if (storage.HasMethod(methodId))
           continue;
       }
 
@@ -310,7 +303,7 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
       {
         // TODO: use different lock
         const std::lock_guard<std::mutex> lock(write);
-        storage.AddMethod(methodPointer, info);
+        storage.AddMethod(methodId, info);
       }
 
       env->Deallocate((unsigned char *)methodName);
@@ -328,8 +321,6 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
 
     {
       const std::lock_guard<std::mutex> lock(write);
-      // std::cout << "alloc " << allocatedKlassName << " in " << methods[top]
-      // << std::endl;
       storage.AddAllocation(hash, stack, info);
     }
   }
