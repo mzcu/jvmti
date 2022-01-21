@@ -36,7 +36,7 @@ ifeq ($(OS), linux)
 endif
 
 
-all: Heapz.class $(TARGET)
+all: Heapz.class $(TARGET) runUnitTest
 
 $(TARGET): $(PROFILE_EXPORT_OBJS) heapz.o
 	$(CXX) $(LDFLAGS) -o $@ $^
@@ -55,7 +55,7 @@ Heapz.class: Heapz.java
 	xxd -i $@ > heapz-inl.h
 
 clean:
-	$(RM) target/ *.o *.dylib *.so *.prof Heapz.class
+	$(RM) target/ *.o *.dylib *.so *.prof Heapz.class unittest
 
 release:
 	mkdir -p target
@@ -64,3 +64,16 @@ release:
 
 protoc:
 	$(PROTOC) --cpp_out=. profile.proto
+
+GTEST_DIR = third_party/googletest
+GTEST_LIB = $(GTEST_DIR)/build/lib
+TESTS = storage_test.cc heapz_test.cc
+
+# requires building third_party/googletest
+unittest: $(TESTS)
+	$(CXX) $(CXXFLAGS) -I$(GTEST_DIR)/googletest/include $(TESTS) -L$(GTEST_LIB) -lpthread -lgtest -lgtest_main -o unittest
+
+runUnitTest: unittest
+	./unittest
+
+.PHONY: runUnitTest
