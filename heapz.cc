@@ -231,11 +231,12 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
     return;
   }
 
-  jvmtiFrameInfo frames[32];
+  const int max_frames = 256;
+  jvmtiFrameInfo frames[max_frames];
   jint frame_count;
   jvmtiError err;
 
-  err = env->GetStackTrace(NULL, 0, 32, frames, &frame_count);
+  err = env->GetStackTrace(NULL, 0, max_frames, frames, &frame_count);
   if (err == JVMTI_ERROR_NONE && frame_count >= 1) {
 
     char *allocatedInstanceClassSignature;
