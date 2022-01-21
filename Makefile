@@ -42,7 +42,7 @@ $(TARGET): $(PROFILE_EXPORT_OBJS) heapz.o
 	$(CXX) $(LDFLAGS) -o $@ $^
 
 test:
-	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET) -Xint -XX:-Inline SamplingExample
+	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET)=interval_bytes=0,max_samples=200000 -Xint -XX:-Inline SamplingExample
 
 testOneShot:
 	$(JAVA)/bin/java -Xmx16m -agentpath:./$(TARGET)=oneshot -Xint -XX:-Inline OneShotExample

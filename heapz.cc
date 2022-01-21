@@ -33,7 +33,12 @@ JNIEXPORT void JNICALL VMDeath(jvmtiEnv *, JNIEnv *);
 // }}}
 
 struct HeapzOptions {
+  std::string param_one_shot = "oneshot";
+  std::string param_sampling_interval = "interval_bytes=";
+  std::string param_max_samples = "max_samples=";
   bool one_shot = false;
+  int sampling_interval = 1024;
+  int max_samples = 1000000;
 };
 
 static std::mutex write;
@@ -46,10 +51,41 @@ static std::function<void(void)> forceGarbageCollection;
 
 static HeapzOptions heapz_options;
 
+static void storeAsInt(std::string src, int &dest) {
+  int tmp;
+  std::istringstream iss(src);
+  iss >> tmp;
+  if (iss.eof()) {
+    dest = tmp;
+  }
+}
+
 static HeapzOptions parseOptions(char *options) {
   HeapzOptions heapz_options;
   std::string str(options ? options : "");
-  heapz_options.one_shot = str.find("oneshot") != std::string::npos;
+  std::istringstream iss(str);
+  std::vector<std::string> opts;
+  while (iss.good()) {
+    std::string o;
+    std::getline(iss, o, ',');
+    opts.push_back(o);
+  }
+  for (const auto &o : opts) {
+    if (o == heapz_options.param_one_shot)
+      heapz_options.one_shot = true;
+    if (o.rfind(heapz_options.param_sampling_interval, 0) == 0) {
+      auto value = o.substr(heapz_options.param_sampling_interval.size());
+      storeAsInt(value, heapz_options.sampling_interval);
+    }
+    if (o.rfind(heapz_options.param_max_samples, 0) == 0) {
+      auto value = o.substr(heapz_options.param_max_samples.size());
+      storeAsInt(value, heapz_options.max_samples);
+    }
+  }
+  LOG_INFO("Options: interval_bytes="
+           << heapz_options.sampling_interval
+           << " max_samples=" << heapz_options.max_samples
+           << " oneshot=" << heapz_options.one_shot << std::endl)
   return heapz_options;
 }
 
@@ -110,7 +146,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
                 << std::endl;
       return false;
     }
-    LOG_INFO("Heap sampling interval set to " << result << "k" << std::endl)
+    LOG_INFO("Heap sampling interval set to " << interval << " bytes" << std::endl)
     return true;
   };
 
@@ -121,11 +157,12 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *jvm, char *options,
     }
   };
 
+  setSamplingInterval(heapz_options.sampling_interval);
+
   if (heapz_options.one_shot) {
     isProfiling.store(true, std::memory_order_relaxed);
   }
 
-  setSamplingInterval(0);
 
   return JNI_OK;
 }
@@ -186,6 +223,13 @@ extern "C" JNIEXPORT void JNICALL SampledObjectAlloc(jvmtiEnv *env, JNIEnv *jni,
 
   if (!isProfiling.load(std::memory_order_relaxed))
     return;
+
+  if (storage.allocations.size() >= heapz_options.max_samples) {
+    isProfiling.store(false, std::memory_order_relaxed);
+    LOG_DEBUG("Max samples (" << heapz_options.max_samples
+                              << ") exceeded, sampling stopped" << std::endl)
+    return;
+  }
 
   jvmtiFrameInfo frames[32];
   jint frame_count;
